@@ -5,62 +5,65 @@ import cv2
 from flask import Flask, request, render_template
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Flatten, Dense, Dropout
-from tensorflow.keras.applications.vgg19 import VGG19
+from tensorflow.keras.layers import Flatten, Dense, Dropout
+from tensorflow.keras.applications import MobileNetV2
 
+# Load a lightweight pretrained architecture (no weights to avoid extra memory/download)
+base_model = MobileNetV2(weights=None, include_top=False, input_shape=(240,240,3))
 
-base_model = VGG19(include_top=False, input_shape=(240,240,3))
+# Build custom classifier on top
 x = base_model.output
-flat=Flatten()(x)
-class_1 = Dense(4608, activation='relu')(flat)
-drop_out = Dropout(0.2)(class_1)
-class_2 = Dense(1152, activation='relu')(drop_out)
-output = Dense(2, activation='softmax')(class_2)
-model_03 = Model(base_model.inputs, output)
-model_03.load_weights(r'D:\CODING\MACHINE LEARNING\MACHINE LEARNING PROJECTS\BrainTumor Detection\model_weights\vgg19_model_03.h5')
+x = Flatten()(x)                  # convert feature maps → vector
+x = Dense(512, activation='relu')(x)
+x = Dropout(0.2)(x)               # reduce overfitting
+output = Dense(2, activation='softmax')(x)  # 2 classes
+
+# Final model
+model_03 = Model(base_model.input, output)
+
+# Load trained weights (must match this architecture)
+model_03.load_weights("model_weights/vgg19_model_03.h5")
+
+# Flask app init
 app = Flask(__name__)
 
-print('Model loaded. Check http://127.0.0.1:5000/')
-
-
+# Convert prediction index → label
 def get_className(classNo):
-	if classNo==0:
-		return "No Brain Tumor"
-	elif classNo==1:
-		return "Yes Brain Tumor"
+    return "No Brain Tumor" if classNo == 0 else "Yes Brain Tumor"
 
+# Preprocess image + run prediction
+def getResult(img_path):
+    img = cv2.imread(img_path)                      # read image
+    img = Image.fromarray(img, 'RGB')               # convert format
+    img = img.resize((240, 240))                    # resize to model input
+    img = np.array(img) / 255.0                     # normalize
+    img = np.expand_dims(img, axis=0)               # add batch dimension
 
-def getResult(img):
-    image = cv2.imread(img)
-    image = Image.fromarray(image, 'RGB')
-    image = image.resize((240, 240))
-    image = np.array(image) / 255.0  # Normalize the image
-    input_img = np.expand_dims(image, axis=0)
-    result = model_03.predict(input_img)
-    print("Model output:", result)  # Debug output
-    result01 = np.argmax(result, axis=1)
-    return result01
+    result = model_03.predict(img)                  # inference
+    return np.argmax(result, axis=1)                # class index
 
-@app.route('/', methods=['GET'])
+# Home page
+@app.route('/')
 def index():
     return render_template('index.html')
 
-
-@app.route('/predict', methods=['GET', 'POST'])
+# Handle image upload + prediction
+@app.route('/predict', methods=['POST'])
 def upload():
-    if request.method == 'POST':
-        f = request.files['file']
+    file = request.files['file']
 
-        basepath = os.path.dirname(__file__)
-        file_path = os.path.join(
-            basepath, 'uploads', secure_filename(f.filename))
-        f.save(file_path)
-        value = getResult(file_path)
-        result = get_className(value[0])  # Get the first element of the array
-        return render_template('result.html', result=result)
-    return None
+    # Save uploaded file
+    os.makedirs("uploads", exist_ok=True)
+    file_path = os.path.join("uploads", secure_filename(file.filename))
+    file.save(file_path)
 
+    # Predict
+    prediction = getResult(file_path)
+    result = get_className(prediction[0])
 
+    return render_template('result.html', result=result)
 
+# Run server (Render compatible)
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
